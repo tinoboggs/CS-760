@@ -1,0 +1,358 @@
+---
+title: "CS 760 Homework 2"
+author: "Martino Boggs"
+format: pdf
+jupyter: python3
+---
+
+## Simplified Decision Tree
+
+Assume each item has two continuous features, the class label is binary ($y \in \{0, 1\}$), and the data is structured and separated by whitespace. Implement a decision tree learner where candidate splits $(j, c)$ for numeric features use a threshold $c$ in feature dimension $j$ of the form $x_{\bullet j} \geq c$. (Note that $c$ is based on values in the training data $x_{1j},\dots,x_{nj}$.) Skip candidate splits with zero split information and use the information gain ratio to choose splits. The stopping criteria for making a node into a leaf are: (1) node is empty, (2) all splits have zero information gain ratio, and (3) the entropy of any candidate split is zero. When there is no majority class in a leaf node, predict $y = 1$.
+
+```{r}
+# load libraries
+library(tidyverse)
+library(data.tree)
+library(DiagrammeR)
+
+# function returns empirical entropy of variable
+entropy <- function(variable) {
+  p <- as.vector(table(variable) / length(variable))
+  return(-sum(p * log2(p)))
+}
+
+# function returns entropy of candidate split (j, c)
+candidateSplitEntropy <- function(candidate_matrix, index) {
+  threshold = candidate_matrix[index, 1]
+  candidate_matrix$s = ifelse(candidate_matrix[,1] >= threshold, 1, 0)
+  return(entropy(candidate_matrix$s))
+}
+
+# function returns information gain for candidate split (j, c)
+infoGain <- function(candidate_matrix, index) {
+  threshold = candidate_matrix[index, 1]
+  candidate_matrix$s = ifelse(candidate_matrix[,1] >= threshold, 1, 0)
+  summand = tapply(candidate_matrix$y, candidate_matrix$s, entropy) * table(candidate_matrix$s) / length(candidate_matrix$y)
+  return((entropy(candidate_matrix$y) - sum(summand)))
+}
+
+# function returns candidate splits (j, c) alongside its entropy and information gain ratio
+determineCandidateSplits <- function(data) {
+  D1 = data[, c("x1", "y")]; D2 = data[, c("x2", "y")]
+  D1$ig = vapply(1:nrow(D1), infoGain, candidate_matrix = D1, numeric(1))
+  D2$ig = vapply(1:nrow(D2), infoGain, candidate_matrix = D2, numeric(1))
+  D1$hs = vapply(1:nrow(D1), candidateSplitEntropy, candidate_matrix = D1, numeric(1))
+  D2$hs = vapply(1:nrow(D2), candidateSplitEntropy, candidate_matrix = D2, numeric(1))
+  candidate_splits = bind_rows(D1, D2) %>% 
+    mutate(feature = rep(1:2, each = nrow(data)), threshold = coalesce(x1, x2), x1 = NULL, x2 = NULL, y = NULL)
+  return(candidate_splits)
+}
+
+# function returns best split (candidate split with maximum information gain ratio)
+findBestSplit <- function(candidate_splits) {
+  candidate_splits$igr = ifelse(candidate_splits$hs > 0, candidate_splits$ig / candidate_splits$hs, 0)
+  return(slice_max(candidate_splits, igr, n = 1, with_ties = FALSE))
+}
+
+# function grows decision tree
+makeSubTree <- function(node, data) {
+  split = findBestSplit(determineCandidateSplits(data))
+  if(split$igr == 0) {
+    # determine class label and make leaf node N
+    label = names(rev(table(data$y)))[which.max(rev(table(data$y)))]
+    node$name <- paste0("y = ", label)
+  } else {
+    # make internal node N
+    node$name <- paste0("x", split$feature, " >= ", split$threshold)
+    children = rev(split(data, data[, split$feature] >= split$threshold))
+    for(i in 1:length(children)) {
+      child <- node$AddChild(names(children)[i])
+      makeSubTree(child, children[[i]])
+    }
+  }
+}
+
+# function to predict label given test data
+predict_label <- function(tree, test) {
+  if(tree$isLeaf) return(tree$name)
+  split <- unlist(str_split(tree$name, " >= "))
+  if(test[[split[1]]] >= as.numeric(split[2])) {
+    return(predict_label(tree$children[[1]], test))
+  } else {
+    return(predict_label(tree$children[[2]], test))
+  }
+}
+```
+
+
+
+## Questions
+
+1. If node is not empty but contains training items with the same label, why is it guaranteed to become a leaf?
+
+If the training items have the same label $y^*$, then $Y = y^*$ is a constant random variable and thus is independent of any candidate split $S$. It follows that the empirical entropy of $Y$ and $Y|S$ is $$\begin{aligned}
+H_D(Y) &= -\sum_{y \:\in\: \mathcal{Y}}\mathbb{P}(Y=y)\log_2\mathbb{P}(Y=y) = -\mathbb{P}(Y = y^*)\log_2\mathbb{P}(Y=y^*)=0 \\[1ex]
+H_D(Y|S) &= -\sum_{s\:\in\:\mathcal{S}} \sum_{y \:\in\:\mathcal{Y}} \mathbb{P}(S=s)\mathbb{P}(Y=y|S=s)\log_2\mathbb{P}(Y=y|S=s)\\[1ex]
+&=-\sum_{s\:\in\:\mathcal{S}}\mathbb{P}(S=s)\mathbb{P}(Y=y^*)\log_2\mathbb{P}(Y=y^*) = 0
+\end{aligned}$$ since $\log_2\mathbb{P}(Y=y^*)=\log_2(1)=0$. Therefore, the information gain ratio of the candidate split is zero and our algorithm creates a leaf node.
+
+
+2. Handcraft a small training set where both classes are present but the algorithm refuses to split; instead it makes the root a leaf node and stops. Plot the training set and explain why.
+
+The algorithm will turn the root into a leaf node if all candidate splits have zero gain ratio. In this example, our training set has both classes present, but the features $x_1$ and $x_2$ are non-informative. That is for each observation with label $y = 1$, there is an observation labelled $y = 0$ with the same features $x_1, x_2$. The candidate splits will have zero gain ratio and the algorithm will return the prediction $y=1$.
+
+```{r}
+example = data.frame(x1 = c(0, 0, 0, 0), x2 = c(0, 0, 1, 1), y = c(0, 1, 0, 1))
+  
+ggplot(example, aes(x1, x2, color = factor(y))) + 
+  geom_point() +
+  scale_color_manual(values = c("cornflowerblue", "coral3"))
+
+example_tree <- Node$new("tmp")
+makeSubTree(example_tree, example)
+plot(example_tree)
+```
+
+
+3. Using `Druns.txt`, list all candidate splits for the root node and their information gain ratio. If the entropy of the candidate split is zero, list its information gain.
+
+```{r}
+Druns <- read.csv("data/Druns.txt", header = FALSE, sep = " ", col.names = c("x1", "x2", "y"))
+
+# list candidate split and information gain ratio (or information gain if entropy of candidate split is zero)
+determineCandidateSplits(Druns) %>% 
+  mutate(igr = ifelse(hs > 0, ig / hs, ig)) %>% 
+  select(feature, threshold, igr, ig) %>% 
+  print.data.frame(row.names = FALSE)
+```
+
+
+4. Build tree from `D3leaves.txt`. Then convert tree to set of logic rules and show the tree.
+
+```{r}
+D3leaves <- read.csv("data/D3leaves.txt", header = FALSE, sep = " ", col.names = c("x1", "x2", "y"))
+
+tree3 <- Node$new("D3")
+makeSubTree(tree3, D3leaves)
+plot(tree3)
+```
+
+If $x_1 \geq 10$, then predict $y=1$; otherwise, predict $y=1$ if $x_2 \geq3$ or $y=0$ if $x_2 < 3$.
+
+
+5. Build a decision tree on `D1.txt` and show it as a binary tree. Interpret the decision boundary. Repeat for `D2.txt`. Is it easy to interpret without visualization?
+
+```{r}
+# read data
+D1 <- read.csv("data/D1.txt", header = FALSE, sep = " ", col.names = c("x1", "x2", "y"))
+D2 <- read.csv("data/D2.txt", header = FALSE, sep = " ", col.names = c("x1", "x2", "y"))
+
+# learn and show decision tree for D1
+tree1 <- Node$new("tmp")
+makeSubTree(tree1, D1)
+plot(tree1)
+```
+
+For `D1.txt`, the decision boundary is the horizontal line $x_2 = 0.201829$. Training points in the dataset above this line are predicted to have label $y=1$, and points below this line are predicted to have label $y = 0$.
+
+```{r}
+# learn and show decision tree for D2
+tree2 <- Node$new("tmp")
+makeSubTree(tree2, D2)
+plot(tree2)
+```
+
+The decision tree for `D2.txt` is much larger than the previous one and is more challenging to interpret without visualization. The decision boundary involves both $x_1$ and $x_2$ (i.e., not a horizontal or vertical line). Training points in this dataset seem to be predicted to have label $y=1$ if either $x_1$ or $x_2$ are sufficiently large. For example, the decision tree predicts $y = 1$ for both training points $(x_1, x_2) = (.97, .05)$ and $(x_1, x_2) = (.11, .88)$. It also predicts $y = 1$ for $(x_1, x_2) = (0.54, 0.43)$, but predicts $y = 0$ for $(x_1, x_2) = (0.53, 0.53)$. The decision boundary may be a line with a negative slope (e.g., close to $x_2=1-x_1$).
+
+6. For `D1.txt` and `D2.txt`, produce a scatterplot of the dataset and visualize the decision boundary. Discuss why the size of the decision trees differ and relate this to the hypothesis space of the decision tree algorithm.
+
+```{r}
+ggplot(D1, aes(x1, x2, color = factor(y))) +
+  geom_point() +
+  geom_hline(yintercept = 0.201829, lty = "dashed") +
+  scale_color_manual(values = c("cornflowerblue", "coral3"))
+
+  
+ggplot(D2, aes(x1, x2, color = factor(y))) +
+  geom_point() +
+  geom_abline(slope = -1, intercept = 1, lty = "dashed") +
+  scale_color_manual(values = c("cornflowerblue", "coral3"))
+```
+
+
+7. Split `Dbig.txt` into a training set of 8192 items and a test set. Generate a sequence of five nested training sets $D_{32} \subset D_{128} \subset D_{512} \subset D_{2048} \subset D_{8192}$. For each dataset, train a decision tree and measure its test set error. List $n$ and the test set error. Plot $n$ versus the test set error. Visualize the decision tree's decision boundary.
+
+```{r}
+set.seed(20)
+Dbig <- read.csv("data/Dbig.txt", header = FALSE, sep = " ", col.names = c("x1", "x2", "y"))
+Dbig <- Dbig[sample(1:nrow(Dbig)), ]
+
+Dbig_test <- Dbig[-(1:8192), ]
+write.table(Dbig_test, "data/Dbig_test.txt")
+write.table(Dbig[1:8192,], "data/Dbig_train.txt")
+
+tree32 <- Node$new("tmp")
+makeSubTree(tree32, Dbig[1:32, ])
+
+tree128 <- Node$new("tmp")
+makeSubTree(tree128, Dbig[1:128, ])
+
+tree512 <- Node$new("tmp")
+makeSubTree(tree512, Dbig[1:512, ]) # takes ~ 12s
+
+tree2048 <- Node$new("tmp")
+system.time(makeSubTree(tree2048, Dbig[1:2048, ])) # takes ~ 1m45s
+
+tree8192 <- Node$new("tmp")
+system.time(makeSubTree(tree8192, Dbig[1:8192, ])) # takes ~ 30m
+
+df <- data.frame(n = c(32, 128, 512, 2048, 8192))
+
+# get number of nodes
+df$num_nodes <- sapply(c(tree32, tree128, tree512, tree2048, tree8192), function(x) x$totalCount)
+
+# get number of misclassified test points
+df$error <- sapply(
+  c(tree32, tree128, tree512, tree2048, tree8192), 
+  function(x) sum(Dbig_test$y != parse_number(apply(Dbig_test, 1, predict_label, tree = x)))
+  )
+
+print.data.frame(df, row.names = FALSE)
+
+# plot n versus test error
+ggplot(df, aes(n, error)) +
+  geom_point(color = "red") +
+  geom_line(color = "red") +
+  labs(x = "training set size", y = "test set error")
+
+# plot decision boundaries
+library(patchwork)
+
+ggplot(Dbig[1:32, ], aes(x1, x2, color = factor(y))) +
+  geom_point(size = 1) +
+  scale_color_manual(values = c("cornflowerblue", "coral3")) +
+
+ggplot(Dbig[1:128, ], aes(x1, x2, color = factor(y))) +
+  geom_point(size = 1) +
+  scale_color_manual(values = c("cornflowerblue", "coral3")) +
+
+ggplot(Dbig[1:512, ], aes(x1, x2, color = factor(y))) +
+  geom_point(size = 1) +
+  scale_color_manual(values = c("cornflowerblue", "coral3")) +
+
+ggplot(Dbig[1:2048, ], aes(x1, x2, color = factor(y))) +
+  geom_point(size = 1) +
+  scale_color_manual(values = c("cornflowerblue", "coral3")) +
+
+ggplot(Dbig[1:8192, ], aes(x1, x2, color = factor(y))) +
+  geom_point(size = 1) +
+  scale_color_manual(values = c("cornflowerblue", "coral3")) +
+plot_layout(ncol = 3, guides = "collect")
+
+```
+
+
+## sklearn
+
+Using sklearn, produce decision trees for the training sets in Question 7. List the training set size, number of nodes in tree, and test set error. Plot a learning curve.
+
+```{python}
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.tree import DecisionTreeClassifier
+
+# load data
+Dbig_train = np.loadtxt("data/Dbig_train.txt", skiprows = 1, usecols = (1, 2, 3))
+Dbig_test = np.loadtxt("data/Dbig_test.txt", skiprows = 1, usecols = (1, 2, 3))
+
+X_train = np.delete(Dbig_train, 2, axis = 1)
+y_train = Dbig_train[:, -1]
+
+X_test = np.delete(Dbig_test, 2, axis = 1)
+y_test = Dbig_test[:, -1]
+
+clf = DecisionTreeClassifier(random_state = 0)
+
+# build decision tree classifier on training set
+# return training set size, number of nodes and error
+def grow_and_show(X_train, y_train, X_test, y_test):
+  # grow decision tree on training data
+  clf = DecisionTreeClassifier(random_state = 0)
+  clf.fit(X_train, y_train)
+
+  # compute error and get number of nodes
+  error = np.sum(clf.predict(X_test) != y_test)
+  num_nodes = clf.tree_.node_count
+  size = len(X_train)
+
+  return {"n": size, "num_nodes": num_nodes, "error": error}
+
+result = []
+for n in [32, 128, 512, 2048, 8192]:
+  result.append(grow_and_show(X_train[0:n], y_train[0:n], X_test, y_test))
+
+# list results and plot size versus error
+df = pd.DataFrame(result)
+df.plot(x = "n", y = "error", style = 'o-r')
+plt.ylabel("test set error")
+plt.xlabel("training set size")
+plt.show()
+
+df
+```
+
+## Lagrange Interpolation
+
+Fix $[a, b]$ and sample $n=100$ points from this interval uniformly. Build a training set of $n$ pairs $(x, y)$ by setting $y = \sin(x)$. Build a model $f$ using Lagrange interpolation. Generate a test set using the same distribution as your training set. Compute and report the train and test error. What do you observe? Repeat the experiment with zero-mean Gaussian noise $\epsilon$ added to $x$. Vary the standard deviation for $\epsilon$ and report your findings.
+
+```{python}
+from scipy.interpolate import lagrange
+
+# let a = 0, b = 4; generate training set
+x_train = np.random.uniform(0, 4, size = 19)
+y_train = np.sin(x_train)
+
+# train model using lagrange interpolation
+f = lagrange(x_train, y_train)
+
+# generate test set
+x_test = np.random.uniform(0, 4, size = 19)
+y_test = np.sin(x_test)
+
+# compute train and test error... absurdly large?
+train_error = np.mean(np.square(f(x_train) - y_train))
+test_error = np.mean(np.square(f(x_test) - y_test))
+
+fig, axs = plt.subplots(1, 2)
+axs[0].plot(x_train, f(x_train), ".r", x_train, y_train, ".b")
+axs[1].plot(x_test, f(x_test), ".r", x_test, y_test, ".b")
+print(train_error, test_error)
+```
+
+We sample $n=19$ points uniformly from $[0, 4]$ and set $y_i=\sin(x_i)$ for $i=1,\dots,19$. We fit a model using Lagrange interpolation. (Note that fitting a model with more than nineteen points using `lagrange` from the `scipy` package results in numerical errors and absurdly large MSE.) The MSEs computed on the training set and test set were 0.001 and 0.011, respectively.
+
+```{python}
+# repeat experiment with noise: 
+# get x_train, y_train, then add e ~ N(loc = 0, scale = 1) to x_train
+x_train = np.random.uniform(0, 4, size = 19)
+y_train = np.sin(x_train)
+x_train = x_train + np.random.normal(0, 0.01, size = 19)
+
+# train model using lagrange interpolation
+f = lagrange(x_train, y_train)
+
+# generate test set
+x_test = np.random.uniform(0, 4, size = 19)
+y_test = np.sin(x_test)
+
+train_error = np.mean(np.square(f(x_train) - y_train))
+test_error = np.mean(np.square(f(x_test) - y_test))
+
+fig, axs = plt.subplots(1, 2)
+axs[0].plot(x_train, f(x_train), ".r", x_train, y_train, ".b")
+axs[1].plot(x_test, f(x_test), ".r", x_test, y_test, ".b")
+print(train_error, test_error)
+```
+
+Let $x_i \sim U(0, 4)$, $y_i = \sin(x_i)$, and fit a model using Lagrange interpolation on $(x_i + \epsilon_i, y_i)$ where $\epsilon_i \sim \mathcal{N}(0, 1)$ for $i=1,\dots,19$. The MSEs computed on the training set and test set (with no Gaussian noise) were 0.056 and $1.57\times10^{8}$. The test error is much larger than the train error setting $\sigma = 1$. Since our model was fit using noisy data, it doesn't capture the true distribution of $(x_i, y_i)$. Increasing $\sigma$ by a factor of 100 seems to reduce both the train and test error, although the test error is still much larger than the train error and our model doesn't capture the sine curve we are trying to learn. Reducing $\sigma$ by a factor of 100 also tends to reduce both the train and test error (and are closer in magnitude). 
