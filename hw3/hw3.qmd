@@ -1,0 +1,176 @@
+
+```{r}
+# Q1.5
+library(tidyverse)
+roc = data.frame(tpr = c(0, 2, 4, 6, 6) / 6, fpr = c(0, 0, 1, 2, 4) / 4)
+
+ggplot(roc, aes(fpr, tpr)) + 
+geom_line(size = 1, color = "coral2") + 
+geom_point(size = 10, color = "coral3") + 
+theme_light() +
+theme(
+  axis.text = element_text(size = 20),
+  axis.title = element_text(size = 20)
+) +
+labs(
+  y = "True Positive Rate", 
+  x = "False Positive Rate",
+) +
+coord_fixed()
+```
+
+
+```{python}
+import itertools
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.model_selection import KFold, cross_val_score
+from sklearn.metrics import accuracy_score, precision_score, recall_score, RocCurveDisplay
+
+# Q2.1
+# read data and split into features and labels
+df = pd.read_table("data/D2z.txt", sep = " ", names = ['x1', 'x2', 'y'])
+
+X = df[['x1', 'x2']] # or df.iloc[:, [0, 1]]
+y = np.ravel(df['y'])
+
+# train 1-NN classifier using Euclidean distance
+clf = KNeighborsClassifier(n_neighbors = 1, metric = "euclidean")
+clf.fit(X, y)
+
+# get predictions on two-dimensional grid [-2.0, -1.9, ..., 1.9, 2.0]
+g = np.arange(-2, 2.1, 0.1)
+test = pd.DataFrame(itertools.product(g, g), columns = ['x1', 'x2'])
+test['y'] = clf.predict(test)
+
+# plot training data and predictions
+fig, ax = plt.subplots()
+sns.scatterplot(test, x = 'x1', y = 'x2', hue = 'y', s = 25, palette = 'Paired', ax = ax)
+sns.scatterplot(df, x = "x1", y = "x2", style = "y", s = 50, c = 'yellow', edgecolor = 'black', ax = ax)
+ax.legend().remove()
+ax.margins(x = 0, y = 0)
+
+# -----------------------------------------------------------------------
+
+# read and format data
+df = pd.read_csv("data/emails.csv")
+X = df.drop(["Email No.", "Prediction"], axis = 1)
+y = df["Prediction"]
+
+# Q2.2
+# train 1-NN classifier and run 5-fold cross validation
+# report accuracy, precision, and recall in each fold
+clf = KNeighborsClassifier(n_neighbors = 1, metric = "euclidean")
+kf = KFold(n_splits = 5)
+t2 = []
+
+for k, (train, test) in enumerate(kf.split(X, y)):
+  clf.fit(X.iloc[train], y.iloc[train]) # fit on train
+  y_pred = clf.predict(X.iloc[test]) # predict on test
+  y_true = y.iloc[test] # get true labels
+  t2.append(
+    {
+      'fold': k + 1,
+      'accuracy': accuracy_score(y_true, y_pred),
+      'precision': precision_score(y_true, y_pred), 
+      'recall': recall_score(y_true, y_pred)
+    }
+  )
+
+# show results
+pd.DataFrame(t2)
+
+# -----------------------------------------------------------------------
+
+# Q2.3
+# implement logistic regression and run 5-fold cross validation
+# report accuracy, precision, and recall in each fold
+
+# sigmoid function
+def sigmoid(z):
+  return 1 / (1 + np.exp(-z))
+
+# update step in gradient descent for logistic regression
+# note: X is N x p, y is N x 1
+def update_step(theta, eta, X, y):
+  gradient = np.dot(sigmoid(np.dot(X, theta)) - y, X)
+  return theta - (eta / len(X)) * gradient
+
+# implement gradient descent algorithm
+def grad_descent(theta, eta, X, y, epsilon, n_iter):
+  theta_new = update_step(theta, eta, X, y)
+  for i in range(n_iter):
+    if np.all(abs(theta_new - theta) <= epsilon):
+      break
+    theta = theta_new
+    theta_new = update_step(theta, eta, X, y)
+  return theta_new
+
+t3 = []
+
+for k, (train, test) in enumerate(kf.split(X, y)):
+  # fit logistic regression model using training data
+  theta = grad_descent(list(itertools.repeat(0, 3000)), 3e-03, X.iloc[train], y.iloc[train], 1e-06, 1000)
+  y_pred = 1 * (sigmoid(np.dot(X.iloc[test], theta)) > 0.5) # predict on test
+  y_true = y.iloc[test] # get true labels
+  t3.append(
+    {
+      'fold': k + 1,
+      'accuracy': accuracy_score(y_true, y_pred),
+      'precision': precision_score(y_true, y_pred), # running into issue with precision...
+      'recall': recall_score(y_true, y_pred)
+    }
+  )
+
+# show results
+pd.DataFrame(t3)
+
+# -----------------------------------------------------------------------
+
+# Q2.4
+# run 5-fold cross validation with k-NN (k = 1, 3, 5, 7, 10)
+# plot average accuracy versus k, and list average accuracy of each case
+t = []
+for k in [1, 3, 5, 7, 10]:
+  clf = KNeighborsClassifier(n_neighbors = k, metric = "euclidean")
+  acc = cross_val_score(clf, X, y, cv = 5, scoring = 'accuracy')
+  t.append(
+    {
+      'k': k,
+      'average_accuracy': np.mean(acc)
+    }
+  )
+
+# show results
+pd.DataFrame(t)
+
+# make plot
+sns.lineplot(pd.DataFrame(t), x = 'k', y = 'average_accuracy', marker='o')
+
+# -----------------------------------------------------------------------
+
+# Q2.5
+# train 5-NN classifier using emails 1-4000
+knn = KNeighborsClassifier(n_neighbors = 5, metric = "euclidean")
+knn.fit(X.head(4000), y.head(4000))
+
+# train logistic regression using emails 1-4000
+theta = grad_descent(
+  theta = list(itertools.repeat(0, 3000)), 
+  eta = 3e-03, 
+  X = X.head(4000), 
+  y = y.head(4000), 
+  epsilon = 1e-06,
+  n_iter = 1000
+)
+# get predicted probabilities
+y_pred = sigmoid(np.dot(X.tail(1000), theta))
+
+# plot ROC curves based on test set
+fig, ax = plt.subplots()
+RocCurveDisplay.from_estimator(knn, X.tail(1000), y.tail(1000), ax = ax)
+RocCurveDisplay.from_predictions(y.tail(1000), y_pred, ax = ax, name = "LogisticRegression")
+```
